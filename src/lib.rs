@@ -1,15 +1,18 @@
+#[macro_use]
 mod utils;
 
+mod app;
+mod canvas;
+mod render;
+mod shader;
+
+
 use wasm_bindgen::prelude::*;
-use std::fmt;
-
-extern crate web_sys;
-
-macro_rules! log {
-    ( $( $t:tt )* ) => {
-        web_sys::console::log_1(&format!( $( $t )* ).into());
-    }
-}
+use wasm_bindgen::JsCast;
+use std::rc::Rc;
+use web_sys::*;
+use crate::app::App;
+use crate::render::Renderer;
 
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
@@ -19,107 +22,62 @@ macro_rules! log {
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 #[wasm_bindgen]
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Cell {
-    Dead = 0,
-    Alive = 1
+pub struct WebClient {
+    app: Rc<App>,
+    canvas: Rc<HtmlCanvasElement>,
+    gl: Rc<WebGl2RenderingContext>,
+    renderer: Rc<Renderer>
 }
 
-#[wasm_bindgen]
-pub struct Universe {
-    width: u32,
-    height: u32,
-    cells: Vec<Cell>
-}
+
+static APP_ID: &'static str = "rust-webgl";
+static WIDTH: u32 = 1024;
+static HEIGHT: u32 = 1024;
+
 
 #[wasm_bindgen]
-impl Universe {
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-
-    pub fn height(&self) -> u32 {
-        self.height
-    }
-
-    pub fn cells(&self) -> *const Cell {
-        self.cells.as_ptr()
-    }
-
-    pub fn tick(&mut self) {
-        let mut next = self.cells.clone();
-        for row in 0..self.height {
-            for col in 0..self.width {
-                let idx = self.get_index(row, col);
-                let cell = self.cells[idx];
-                let live_neighbors = self.live_neighbor_count(row, col);
-
-                let next_cell = match(cell, live_neighbors) {
-                    (Cell::Alive, x) if x < 2 => Cell::Dead,
-                    (Cell::Alive, 2) | (Cell::Alive, 3) => Cell::Alive,
-                    (Cell::Alive, x) if x > 3 => Cell::Dead,
-                    (Cell::Dead, 3) => Cell::Alive,
-                    (otherwise, _) => otherwise
-                };
-
-                next[idx] = next_cell;
-            }
-        }
-        self.cells = next;
-    }
-
-    pub fn render(&self) -> String {
-        self.to_string()
-    }
-
-    fn get_index(&self, row: u32, col: u32) -> usize {
-        (row * self.width + col) as usize
-    }
-
-    fn live_neighbor_count(&self, row: u32, col: u32) -> u8 {
-        let mut count = 0;
-        for delta_row in [self.height - 1, 0, 1].iter().cloned() {
-            for delta_col in [self.width -1, 0, 1].iter().cloned() {
-                if delta_row == 0 && delta_col == 0 {
-                    continue;
-                }
-
-                let n_row = (row + delta_row) % self.height;
-                let n_col = (col + delta_col) % self.width;
-                let idx = self.get_index(n_row, n_col);
-                count += self.cells[idx] as u8;
-            }
-        }
-        count
-    }
-
-    pub fn new(width: u32, height: u32) -> Self {
+impl WebClient {
+    pub fn new() -> Self {
         utils::set_panic_hook();
-        log!("Creating universe: {} x {}", width, height);
 
-        let cells = (0..width * height)
-            .map(|i| {
-                if i % 2 == 0 || i % 7 == 0 {
-                    Cell::Alive
-                } else {
-                    Cell::Dead
-                }
-            })
-            .collect();
-        Universe { width, height, cells }
-    }
-}
-
-impl fmt::Display for Universe {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for line in self.cells.as_slice().chunks(self.width as usize) {
-            for &cell in line {
-                let symbol = if cell == Cell::Dead { '◻' } else { '◼' };
-                write!(f, "{}", symbol)?;
+        // Create the canvas
+        let window = window().unwrap();
+        let document = window.document().unwrap();
+        let div: HtmlElement = match document.get_element_by_id(APP_ID) {
+            Some(container) => container.dyn_into().unwrap(),
+            None => {
+                let div = document.create_element("div").unwrap();
+                div.set_id(APP_ID);
+                div.dyn_into().unwrap()
             }
-            write!(f, "\n")?;
-        }
+        };
+        let canvas = Rc::new(
+            canvas::create_canvas(div, WIDTH, HEIGHT).unwrap()
+        );
+
+        // Create the WebGl context
+        let gl = Rc::new(canvas::create_webgl_context(canvas.clone()).unwrap());
+
+        // Create the Application
+        let app = Rc::new(App::new());
+
+        // Create the Renderer
+        let renderer = Rc::new(Renderer::new(gl.clone()));
+
+        // Create the WebClient
+        WebClient { app, canvas, gl, renderer }
+    }
+
+    pub fn start(&mut self) -> Result<(), JsValue> {
+        Rc::make_mut(&mut self.renderer).init(self.gl.clone())?;
         Ok(())
+    }
+
+    pub fn update(&mut self, dt: f64) {
+        Rc::make_mut(&mut self.app).update(dt);
+    }
+
+    pub fn render(&self) -> Result<(), JsValue> {
+        self.renderer.render(self.gl.clone())
     }
 }
