@@ -5,30 +5,26 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen::JsCast;
 
 pub(self) use self::super::camera::*;
-pub(self) use self::super::geometry::*;
+pub(self) use self::super::globe::*;
 pub(self) use self::super::renderable::*;
+use nalgebra::{Transform3, Similarity3, Vector3};
 
 
 #[derive(Clone)]
 pub struct Renderer {
-    camera: Camera,
-    globe: Globe
 }
 
 impl Renderer {
 
     pub fn new(gl: Rc<GL>) -> Self {
-        let camera = Camera::new(90.0, 1.0, 1.0, 1000.0);
-        let globe = Globe::new(200.0, 40, 30);
-        Renderer { camera, globe }
+        Renderer {}
     }
 
-    pub fn init(&mut self, gl: Rc<GL>) -> Result<(), JsValue> {
-        self.globe.init(gl.clone());
+    pub fn init(&mut self, gl: &GL) -> Result<(), JsValue> {
         Ok(())
     }
 
-    pub fn render(&self, gl: Rc<GL>) -> Result<(), JsValue>{
+    pub fn render(&self, gl: &GL, camera: &Camera, renderables: &[Box<dyn Render>]) -> Result<(), JsValue>{
         let canvas: HtmlCanvasElement = gl.canvas().unwrap().dyn_into()?;
 
         // Set background color
@@ -46,7 +42,10 @@ impl Renderer {
         gl.cull_face(GL::BACK);
 
         // Draw elements
-        self.globe.render(gl.clone(), &self.camera);
+        let model_matrix = Transform3::identity();
+        for r in renderables {
+            r.render(gl, &model_matrix, camera);
+        }
 
         // Unset options
         gl.disable(GL::BLEND);

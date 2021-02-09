@@ -7,7 +7,8 @@ use std::cell::RefCell;
 #[derive(Clone)]
 pub struct Shader {
     pub program: WebGlProgram,
-    uniforms: RefCell<HashMap<String, WebGlUniformLocation>>
+    vertex_attrs: RefCell<HashMap<String, Option<u32>>>,
+    uniforms: RefCell<HashMap<String, Option<WebGlUniformLocation>>>
 }
 
 impl Shader {
@@ -21,22 +22,27 @@ impl Shader {
         let fs = compile_shader(&gl, GL::FRAGMENT_SHADER, frag_shader)?;
         let program = link_program(&gl, &vs, &fs)?;
 
+        let vertex_attrs = RefCell::new(HashMap::new());
         let uniforms = RefCell::new(HashMap::new());
 
-        Ok(Shader { program, uniforms })
+        Ok(Shader { program, vertex_attrs, uniforms })
+    }
+
+    pub fn get_attrib_location(&self, gl: &GL, name: &str) -> Option<u32> {
+        let mut vertex_attrs = self.vertex_attrs.borrow_mut();
+        *vertex_attrs.entry(name.to_string())
+            .or_insert(match gl.get_attrib_location(&self.program, name) {
+                x if x < 0 => None,
+                x => Some(x as u32)
+            })
     }
 
     pub fn get_uniform_location(&self, gl: &GL, name: &str) -> Option<WebGlUniformLocation> {
         let mut uniforms = self.uniforms.borrow_mut();
-
-        match uniforms.get(name) {
-            Some(x) => Some(x.clone()),
-            None => {
-                let loc = gl.get_uniform_location(&self.program, name)
-                    .expect(&format!(r#"Uniform '{}' not found"#, name));
-                uniforms.insert(name.to_string(), loc);
-                Some(uniforms.get(name).unwrap().clone())
-            }
+        match uniforms.entry(name.to_string())
+            .or_insert(gl.get_uniform_location(&self.program, name)) {
+            Some(x) => Some((*x).clone()),
+            _ => None
         }
     }
 }

@@ -7,7 +7,136 @@ use web_sys::WebGl2RenderingContext as GL;
 use web_sys::*;
 
 use crate::utils::get_memory_buffer;
-use crate::render::Camera;
+use super::Camera;
+use super::Texture;
+use crate::shader::Shader;
+
+use std::cell::RefCell;
+use wasm_bindgen::__rt::std::collections::HashMap;
+use nalgebra::{Isometry3, Rotation3, Similarity3, Transform3};
+
+
+pub trait Render {
+    fn render(&self, gl: &GL, model_matrix: &Transform3<f32>, camera: &Camera);
+}
+
+
+#[derive(Clone)]
+pub struct Renderable {
+    shader: Rc<Shader>,
+    vao: WebGlVertexArrayObject,
+    attributes: HashMap<String, u32>,
+    num_indices: u32,
+    indices_type: u32,
+    textures: HashMap<String, Texture>
+}
+
+impl Renderable {
+    pub fn new(gl: &GL, shader: Rc<Shader>) -> Self {
+        let vao = gl.create_vertex_array().unwrap();
+        let attributes = HashMap::new();
+        let textures = HashMap::new();
+        Renderable {
+            shader,
+            vao,
+            attributes,
+            num_indices: 0,
+            indices_type: GL::UNSIGNED_SHORT,
+            textures
+        }
+    }
+
+    pub fn vertex_attribute<T: CreateArray>(&mut self, gl: &GL, name: &str, data: &[T], size: i32) {
+        let attr_location = self.shader.get_attrib_location(&gl, name);
+        if attr_location.is_none() {
+           log!("Cannot find attribute'{}'", name);
+            return
+        }
+
+        gl.bind_vertex_array(Some(&self.vao));
+
+        let data_location = data.as_ptr() as u32 / size_of::<T>() as u32;
+        let array = T::create_array(data_location, data_location + data.len() as u32);
+        let buffer = gl.create_buffer();
+        gl.bind_buffer(GL::ARRAY_BUFFER, buffer.as_ref());
+        gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::STATIC_DRAW);
+        gl.vertex_attrib_pointer_with_i32(attr_location.unwrap(), size, T::data_type(), false, 0, 0);
+
+        gl.bind_vertex_array(None);
+        self.attributes.insert(name.to_string(), attr_location.unwrap());
+    }
+
+    pub fn index_buffer<T: CreateArray>(&mut self, gl: &GL, data: &[T]) {
+        gl.bind_vertex_array(Some(&self.vao));
+
+        let data_location = data.as_ptr() as u32 / size_of::<T>() as u32;
+        let array = T::create_array(data_location, data_location + data.len() as u32);
+        let buffer = gl.create_buffer();
+        gl.bind_buffer(GL::ELEMENT_ARRAY_BUFFER, buffer.as_ref());
+        gl.buffer_data_with_array_buffer_view(GL::ELEMENT_ARRAY_BUFFER, &array, GL::STATIC_DRAW);
+        self.num_indices = data.len() as u32;
+        self.indices_type = T::data_type();
+
+        gl.bind_vertex_array(None);
+    }
+
+    pub fn texture(&mut self, gl: Rc<GL>, src: &str, texture_name: &str) {
+        let texture = Texture::new(gl.clone(), src);
+        self.textures.insert(texture_name.to_string(), texture);
+    }
+
+    fn bind(&self, gl: &GL) {
+        gl.use_program(Some(&self.shader.program));
+        gl.bind_vertex_array(Some(&self.vao));
+        for (name, location) in &self.attributes {
+            gl.enable_vertex_attrib_array(*location);
+        }
+        let mut texture_unit = 0i32;
+        for (texture_name, texture) in &self.textures {
+            let location = self.shader.get_uniform_location(gl, &texture_name);
+            gl.active_texture(GL::TEXTURE0 + texture_unit as u32);
+            gl.bind_texture(GL::TEXTURE_2D, Some(texture.get_texture()));
+            gl.uniform1i(location.as_ref(), texture_unit);
+        }
+    }
+
+    fn unbind(&self, gl: &GL) {
+        for texture_unit in 0..self.textures.len() {
+            gl.active_texture(GL::TEXTURE0 + texture_unit as u32);
+            gl.bind_texture(GL::TEXTURE_2D, None);
+        }
+        for (name, location) in &self.attributes {
+            gl.disable_vertex_attrib_array(*location);
+        }
+        gl.bind_vertex_array(None);
+        gl.use_program(None);
+    }
+}
+
+impl Render for Renderable {
+    fn render(&self, gl: &GL, model_matrix: &Transform3<f32>, camera: &Camera) {
+        self.bind(gl);
+
+        let view_m = camera.view().to_homogeneous();
+        let projection_m = camera.projection();
+        let model_view_m = camera.view() * model_matrix;
+        let model_view_rot_m: Rotation3<f32> = nalgebra::convert_unchecked(model_view_m);
+        let normal_m = model_view_rot_m.inverse().transpose();
+
+        let proj_uni = self.shader.get_uniform_location(gl, "u_projectionMatrix");
+        gl.uniform_matrix4fv_with_f32_array(proj_uni.as_ref(), false, projection_m.as_matrix().as_slice());
+
+        let model_view_uni = self.shader.get_uniform_location(gl, "u_modelViewMatrix");
+        gl.uniform_matrix4fv_with_f32_array(model_view_uni.as_ref(), false, model_view_m.to_homogeneous().as_slice());
+
+        let normal_matrix_uni = self.shader.get_uniform_location(gl, "u_normalMatrix");
+        gl.uniform_matrix3fv_with_f32_array(normal_matrix_uni.as_ref(), false, normal_m.matrix().as_slice());
+
+        gl.draw_elements_with_i32(GL::TRIANGLES, self.num_indices as i32, self.indices_type, 0);
+
+        self.unbind(gl);
+    }
+}
 
 
 pub trait CreateArray {
@@ -63,76 +192,5 @@ impl CreateArray for u32 {
     }
 }
 
-
-pub trait Renderable {
-    fn vertex_buffer<T: CreateArray>(&self, gl: Rc<GL>, data: &[T], attrib: u32, size: i32) {
-        let data_location = data.as_ptr() as u32 / size_of::<T>() as u32;
-        let array = T::create_array(data_location, data_location + data.len() as u32);
-        let buffer = gl.create_buffer();
-        gl.bind_buffer(GL::ARRAY_BUFFER, buffer.as_ref());
-        gl.buffer_data_with_array_buffer_view(GL::ARRAY_BUFFER, &array, GL::STATIC_DRAW);
-        gl.vertex_attrib_pointer_with_i32(attrib, size, T::data_type(), false, 0, 0);
-    }
-
-    fn index_buffer<T: CreateArray>(&self, gl: Rc<GL>, data: &[T]) {
-        let data_location = data.as_ptr() as u32 / size_of::<T>() as u32;
-        let array = T::create_array(data_location, data_location + data.len() as u32);
-        let buffer = gl.create_buffer().unwrap();
-        gl.bind_buffer(GL::ELEMENT_ARRAY_BUFFER, Some(&buffer));
-        gl.buffer_data_with_array_buffer_view(GL::ELEMENT_ARRAY_BUFFER, &array, GL::STATIC_DRAW);
-    }
-
-    fn load_texture_image(&self, gl: Rc<GL>, src: &str) -> Option<WebGlTexture> {
-        let texture = gl.create_texture();
-        gl.bind_texture(GL::TEXTURE_2D, texture.as_ref());
-
-        gl.tex_parameteri(GL::TEXTURE_2D, GL::TEXTURE_MIN_FILTER, GL::LINEAR as i32);
-        gl.tex_parameteri(GL::TEXTURE_2D, GL::TEXTURE_MAG_FILTER, GL::LINEAR as i32);
-        gl.tex_parameteri(GL::TEXTURE_2D, GL::TEXTURE_WRAP_S, GL::CLAMP_TO_EDGE as i32);
-        gl.tex_parameteri(GL::TEXTURE_2D, GL::TEXTURE_WRAP_T, GL::CLAMP_TO_EDGE as i32);
-
-        gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_u8_array_and_src_offset(
-            GL::TEXTURE_2D,
-            0,
-            GL::RGBA as i32,
-            1,
-            1,
-            0,
-            GL::RGBA,
-            GL::UNSIGNED_BYTE,
-            &[0u8, 255u8, 0u8, 255u8],
-            0
-        );
-
-        let image = Rc::new(HtmlImageElement::new().unwrap());
-
-        let gl_cloned = gl.clone();
-        let image_clone = image.clone();
-        let texture_clone = texture.clone();
-
-        let onload = Closure::wrap(Box::new(move || {
-            gl_cloned.bind_texture(GL::TEXTURE_2D, texture_clone.as_ref());
-            gl_cloned.tex_image_2d_with_u32_and_u32_and_html_image_element(
-                GL::TEXTURE_2D,
-                0,
-                GL::RGBA as i32,
-                GL::RGBA,
-                GL::UNSIGNED_BYTE,
-                &image_clone
-            );
-            gl_cloned.generate_mipmap(GL::TEXTURE_2D);
-        }) as Box<dyn Fn()>);
-
-        image.set_onload(Some(onload.as_ref().unchecked_ref()));
-        image.set_src(src);
-
-        onload.forget();
-
-        texture
-    }
-
-    fn init(&mut self, gl: Rc<GL>);
-    fn render(&self, gl: Rc<GL>, camera: &Camera);
-}
 
 

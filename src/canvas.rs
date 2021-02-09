@@ -19,7 +19,7 @@ pub fn create_canvas(parent: HtmlElement, width: u32, height: u32) -> Result<Htm
 }
 
 
-pub fn create_webgl_context(canvas: Rc<HtmlCanvasElement>) -> Result<WebGl2RenderingContext, JsValue> {
+pub fn create_webgl_context(canvas: &HtmlCanvasElement) -> Result<WebGl2RenderingContext, JsValue> {
     let gl: WebGl2RenderingContext = canvas.get_context("webgl2")?.unwrap().dyn_into()?;
     gl.clear_color(0.0, 0.0, 0.0, 1.0);
     gl.enable(GL::DEPTH_TEST);

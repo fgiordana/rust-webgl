@@ -23,10 +23,10 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
 #[wasm_bindgen]
 pub struct WebClient {
-    app: Rc<App>,
-    canvas: Rc<HtmlCanvasElement>,
+    app: App,
+    canvas: HtmlCanvasElement,
     gl: Rc<WebGl2RenderingContext>,
-    renderer: Rc<Renderer>
+    renderer: Renderer
 }
 
 
@@ -51,33 +51,35 @@ impl WebClient {
                 div.dyn_into().unwrap()
             }
         };
-        let canvas = Rc::new(
-            canvas::create_canvas(div, WIDTH, HEIGHT).unwrap()
-        );
+        let canvas = canvas::create_canvas(div, WIDTH, HEIGHT).unwrap();
 
         // Create the WebGl context
-        let gl = Rc::new(canvas::create_webgl_context(canvas.clone()).unwrap());
+        let gl = Rc::new(canvas::create_webgl_context(&canvas).unwrap());
 
         // Create the Application
-        let app = Rc::new(App::new());
+        let app = App::new(gl.clone());
 
         // Create the Renderer
-        let renderer = Rc::new(Renderer::new(gl.clone()));
+        let renderer = Renderer::new(gl.clone());
 
         // Create the WebClient
         WebClient { app, canvas, gl, renderer }
     }
 
     pub fn start(&mut self) -> Result<(), JsValue> {
-        Rc::make_mut(&mut self.renderer).init(self.gl.clone())?;
+        self.renderer.init(self.gl.as_ref())?;
         Ok(())
     }
 
     pub fn update(&mut self, dt: f64) {
-        Rc::make_mut(&mut self.app).update(dt);
+        self.app.update(dt);
     }
 
     pub fn render(&self) -> Result<(), JsValue> {
-        self.renderer.render(self.gl.clone())
+        self.renderer.render(
+            self.gl.as_ref(),
+            self.app.get_camera(),
+            self.app.get_renderables()
+        )
     }
 }
